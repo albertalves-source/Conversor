@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 import warnings
+import re
 
 # Tenta importar as bibliotecas específicas para PDF
 try:
@@ -19,40 +20,78 @@ warnings.filterwarnings("ignore")
 
 # --- FUNÇÕES DE CONVERSÃO ---
 
-def pdf_para_dataframe(file):
-    """Lê um PDF, procura tabelas e transforma num DataFrame do Pandas."""
+def pdf_para_dataframe(file, modo):
+    """Lê um PDF e transforma num DataFrame do Pandas de acordo com o modo selecionado."""
     with pdfplumber.open(file) as pdf:
         all_rows = []
-        encontrou_tabela = False
         
-        for page in pdf.pages:
-            tables = page.extract_tables()
-            if tables:
-                encontrou_tabela = True
-                for table in tables:
-                    for row in table:
-                        # Limpa quebras de linha dentro das células do PDF
-                        cleaned_row = [str(cell).replace('\n', ' ').strip() if cell else "" for cell in row]
-                        all_rows.append(cleaned_row)
-            else:
-                # Se não achar tabela, tenta ler texto linha a linha (Fallback)
+        # MODO 1: Tabelas com linhas desenhadas
+        if modo == "Tabelas com Bordas (Padrão)":
+            for page in pdf.pages:
+                tables = page.extract_tables()
+                if tables:
+                    for table in tables:
+                        for row in table:
+                            # Limpa quebras de linha dentro das células do PDF
+                            cleaned_row = [str(cell).replace('\n', ' ').strip() if cell else "" for cell in row]
+                            all_rows.append(cleaned_row)
+                            
+        # MODO 2: Extratos Bancários (Agrupa texto solto na mesma data)
+        elif modo == "Inteligente (Agrupar por Data) - Ideal para Extratos Bancários":
+            linha_atual = []
+            for page in pdf.pages:
                 text = page.extract_text()
-                if text and not encontrou_tabela:
-                    for line in text.split('\n'):
-                        # Separa por espaços múltiplos para simular colunas
-                        import re
-                        cleaned_row = re.split(r'\s{2,}', line.strip())
-                        all_rows.append(cleaned_row)
+                if not text: continue
+                
+                for l in text.split('\n'):
+                    if not l.strip(): continue
+                    
+                    # Se começar com uma Data, é o início de uma nova transação
+                    if re.search(r'^\s*\d{2}[/-]\d{2}[/-]\d{2,4}', l):
+                        if linha_atual:
+                            all_rows.append(linha_atual)
+                        # Separa as colunas por grandes espaços
+                        linha_atual = re.split(r'\s{2,}', l.strip())
+                    else:
+                        # Se não tem data, é a continuação do histórico anterior (ou cabeçalho)
+                        if linha_atual:
+                            partes_extra = re.split(r'\s{2,}', l.strip())
+                            if len(partes_extra) == 1:
+                                # Cola na 2ª coluna (Histórico) ou 1ª se só houver uma
+                                if len(linha_atual) > 1:
+                                    linha_atual[1] += " " + partes_extra[0]
+                                else:
+                                    linha_atual[0] += " " + partes_extra[0]
+                            else:
+                                # Tenta colar nas colunas respetivas
+                                for idx, p in enumerate(partes_extra):
+                                    target_idx = min(idx + 1, len(linha_atual) - 1)
+                                    linha_atual[target_idx] += " " + p
+                        else:
+                            # Cabeçalhos iniciais antes das transações
+                            all_rows.append(re.split(r'\s{2,}', l.strip()))
+            
+            if linha_atual: # Guarda a última linha
+                all_rows.append(linha_atual)
+
+        # MODO 3: Texto Quebrado Simples
+        elif modo == "Texto Bruto (Separar colunas por espaço)":
+            for page in pdf.pages:
+                text = page.extract_text()
+                if not text: continue
+                for l in text.split('\n'):
+                    if l.strip():
+                        all_rows.append(re.split(r'\s{2,}', l.strip()))
         
         if not all_rows:
             return pd.DataFrame()
             
-        # Ajusta o tamanho das linhas para não dar erro no Pandas
-        max_cols = max(len(row) for row in all_rows)
-        normalized_rows = [row + [""] * (max_cols - len(row)) for row in all_rows]
+        # Ajusta o tamanho das linhas para o Pandas não dar erro
+        max_cols = max((len(row) for row in all_rows if row), default=0)
+        normalized_rows = [row + [""] * (max_cols - len(row)) for row in all_rows if row]
         
-        # Assume a primeira linha como cabeçalho
-        if len(normalized_rows) > 1:
+        # Só assume a primeira linha como cabeçalho se o utilizador escolher Tabelas Padrão
+        if modo == "Tabelas com Bordas (Padrão)" and len(normalized_rows) > 1:
             df = pd.DataFrame(normalized_rows[1:], columns=normalized_rows[0])
         else:
             df = pd.DataFrame(normalized_rows)
@@ -115,17 +154,27 @@ aba1, aba2 = st.tabs(["📄 PDF ➡️ Excel", "📊 Excel ➡️ PDF"])
 # ==========================================
 with aba1:
     st.subheader("Extrair tabelas de um ficheiro PDF")
-    st.info("💡 **Dica:** Este método funciona melhor em PDFs gerados por sistemas (como extratos bancários) que contenham tabelas estruturadas.")
+    
+    modo_extracao = st.radio(
+        "Selecione o Método de Extração:",
+        [
+            "Inteligente (Agrupar por Data) - Ideal para Extratos Bancários",
+            "Tabelas com Bordas (Padrão)",
+            "Texto Bruto (Separar colunas por espaço)"
+        ]
+    )
+    
+    st.info("💡 **Dica:** Os Extratos Bancários devem ser extraídos pelo modo Inteligente. Se a tabela final ficar estranha, troque de modo e converta de novo.")
     
     pdf_file = st.file_uploader("Arraste o seu PDF aqui", type=["pdf"], key="pdf_up")
     
     if pdf_file:
         with st.spinner("A analisar a estrutura do PDF..."):
             try:
-                df_pdf = pdf_para_dataframe(pdf_file)
+                df_pdf = pdf_para_dataframe(pdf_file, modo_extracao)
                 
                 if df_pdf.empty:
-                    st.warning("Não foi possível encontrar tabelas estruturadas neste PDF.")
+                    st.warning("Não foi possível encontrar dados neste PDF usando o modo atual.")
                 else:
                     st.success("PDF extraído com sucesso!")
                     st.dataframe(df_pdf, use_container_width=True)
