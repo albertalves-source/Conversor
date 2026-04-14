@@ -36,7 +36,7 @@ def pdf_para_dataframe(file, modo):
                             cleaned_row = [str(cell).replace('\n', ' ').strip() if cell else "" for cell in row]
                             all_rows.append(cleaned_row)
                             
-        # MODO 2: Extratos Bancários (Agrupa texto solto e separa Data, Histórico, ID e Valores)
+        # MODO 2: Extratos Bancários (Inteligência Contábil de Débito/Crédito)
         elif modo == "Inteligente (Agrupar por Data) - Ideal para Extratos Bancários":
             linhas_processadas = []
             linha_atual = {}
@@ -64,7 +64,7 @@ def pdf_para_dataframe(file, modo):
                     if not line: continue
                     
                     # Ignorar cabeçalhos repetitivos do PDF que poluem a tabela
-                    if any(header in line.upper() for header in ["SALDO", "EXTRATO", "DATA MOVIMENTO", "PERÍODO", "NOME:", "CONTA:", "ID"]):
+                    if any(header in line.upper() for header in ["SALDO", "EXTRATO", "DATA MOVIMENTO", "PERÍODO", "NOME:", "CONTA:", "ID", "DÉBITO", "CRÉDITO"]):
                         continue
                     
                     # Se começar com uma Data, é o início de uma nova transação
@@ -94,11 +94,20 @@ def pdf_para_dataframe(file, modo):
                                 id_transacao = token + id_transacao
                                 historico = historico.replace(token, '').strip()
                         
+                        # 3. Inteligência Contábil Inicial
+                        hist_upper = historico.upper()
+                        is_credito = False # Padrão
+                        if any(x in hist_upper for x in ["RECEBID", "DEVOLU", "DESFAZIMENTO", "ESTORNO", "RESSARCIMENTO", "CREDITO", "CRÉDITO", "DEPÓSITO", "DEPOSITO"]):
+                            is_credito = True
+                        if any(x in hist_upper for x in ["ENVIAD", "PAGAMENTO", "PAGTO", "SAQUE", "COMPRA", "DEBITO", "DÉBITO"]):
+                            is_credito = False
+                        
                         linha_atual = {
                             "Data": data,
                             "Histórico": historico.strip(),
                             "ID / Documento": id_transacao.strip(),
-                            "Valores": " | ".join(valores)
+                            "Valores_Lista": valores,
+                            "Is_Credito": is_credito
                         }
                     else:
                         # Se não tem data, é linha de continuação da transação anterior
@@ -106,8 +115,7 @@ def pdf_para_dataframe(file, modo):
                             # Tenta puxar valores perdidos nesta linha
                             valores_extra = re.findall(regex_valor, line)
                             if valores_extra:
-                                ext_vals = " | ".join(valores_extra)
-                                linha_atual["Valores"] = (linha_atual["Valores"] + " | " + ext_vals).strip(" | ")
+                                linha_atual["Valores_Lista"].extend(valores_extra)
                                 
                             texto_extra = line
                             for v in valores_extra:
@@ -128,22 +136,38 @@ def pdf_para_dataframe(file, modo):
                                 linha_atual["Histórico"] += " " + hist_extra.strip()
                             if id_extra:
                                 linha_atual["ID / Documento"] += id_extra.strip()
+                                
+                            # Reavaliação da inteligência contábil com as novas palavras
+                            hist_completo_up = linha_atual["Histórico"].upper()
+                            if any(x in hist_completo_up for x in ["RECEBID", "DEVOLU", "DESFAZIMENTO", "ESTORNO", "RESSARCIMENTO", "CREDITO", "CRÉDITO", "DEPÓSITO", "DEPOSITO"]):
+                                linha_atual["Is_Credito"] = True
+                            elif any(x in hist_completo_up for x in ["ENVIAD", "PAGAMENTO", "PAGTO", "SAQUE", "COMPRA", "DEBITO", "DÉBITO"]):
+                                linha_atual["Is_Credito"] = False
             
             if linha_atual: # Guarda a última linha do documento
                 linhas_processadas.append(linha_atual)
                 
+            # Tratamento Final de Colunas
+            for row in linhas_processadas:
+                vals = row["Valores_Lista"]
+                is_cred = row["Is_Credito"]
+                
+                # Regras de Débito, Crédito e Saldo
+                if is_cred:
+                    row["Débito"] = ""
+                    row["Crédito"] = vals[0] if len(vals) > 0 else ""
+                else:
+                    row["Débito"] = vals[0] if len(vals) > 0 else ""
+                    row["Crédito"] = ""
+                
+                # Se existir um 2º ou 3º valor, normalmente o último é o saldo do dia
+                row["Saldo"] = vals[-1] if len(vals) > 1 else ""
+                
+                # Limpeza das chaves temporárias
+                del row["Valores_Lista"]
+                del row["Is_Credito"]
+
             df = pd.DataFrame(linhas_processadas)
-            
-            # Separa a string de valores em colunas distintas (Valor 1, Valor 2...)
-            if not df.empty and "Valores" in df.columns:
-                def extrair_colunas_valor(val_str):
-                    vals = [v.strip() for v in str(val_str).split('|') if v.strip()]
-                    while len(vals) < 3: vals.append("")
-                    return pd.Series([vals[0], vals[1], vals[2]])
-                
-                df[['Valor 1', 'Valor 2', 'Valor 3']] = df['Valores'].apply(extrair_colunas_valor)
-                df = df.drop(columns=['Valores'])
-                
             return df
 
         # MODO 3: Texto Quebrado Simples
