@@ -11,7 +11,7 @@ try:
     from reportlab.lib.pagesizes import landscape, A4
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
     from reportlab.lib import colors
-    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 except ImportError:
     st.error("⚠️ Faltam bibliotecas! Certifique-se de ter no seu requirements.txt: pandas, streamlit, pdfplumber, reportlab, openpyxl")
 
@@ -217,16 +217,23 @@ def dataframe_para_pdf(df, titulo="Relatório Convertido"):
         total_len = sum(max_lens)
         col_widths = [(l / total_len) * largura_util for l in max_lens]
     
-    style_header = styles['Normal']
-    style_header.fontSize = 9
-    style_header.textColor = colors.whitesmoke
-    style_header.alignment = 1 # Center
-    style_header.fontName = 'Helvetica-Bold'
+    # Cria Estilos Separados para Cabeçalho e Células para não se sobreporem
+    style_header = ParagraphStyle(
+        'HeaderStyle',
+        parent=styles['Normal'],
+        fontSize=9,
+        textColor=colors.whitesmoke,
+        alignment=1, # Centro
+        fontName='Helvetica-Bold'
+    )
     
-    style_cell = styles['Normal']
-    style_cell.fontSize = 8
-    style_cell.alignment = 1 # Center
-    style_cell.textColor = colors.HexColor("#2C3E50")
+    style_cell = ParagraphStyle(
+        'CellStyle',
+        parent=styles['Normal'],
+        fontSize=8,
+        textColor=colors.HexColor("#2C3E50"),
+        alignment=1 # Centro
+    )
     
     cabecalho = [Paragraph(html.escape(str(c)), style_header) for c in df.columns]
     dados_formatados = [cabecalho]
