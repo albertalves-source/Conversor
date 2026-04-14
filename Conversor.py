@@ -177,8 +177,10 @@ def pdf_para_dataframe(file, modo):
         return df
 
 def dataframe_para_pdf(df, titulo="Relatório Convertido"):
-    """Transforma um DataFrame do Pandas num ficheiro PDF formatado."""
+    """Transforma um DataFrame do Pandas num ficheiro PDF formatado com quebra automática de texto."""
     buffer = io.BytesIO()
+    # A4 em paisagem tem aprox 842 pontos de largura. Com margens de 30, sobram cerca de 782 utilizáveis.
+    largura_util = 782 
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=18)
     elements = []
     
@@ -187,23 +189,53 @@ def dataframe_para_pdf(df, titulo="Relatório Convertido"):
     elements.append(titulo_formatado)
     elements.append(Spacer(1, 20))
     
-    colunas = [str(c) for c in df.columns]
-    dados = [colunas] + df.astype(str).values.tolist()
+    num_cols = len(df.columns)
+    col_widths = []
     
-    t = Table(dados)
+    if num_cols > 0:
+        # Lógica para calcular a largura proporcional baseada no tamanho do texto
+        max_lens = []
+        for col in df.columns:
+            # Analisa o tamanho do nome da coluna e dos dados
+            max_len = max(df[col].astype(str).apply(len).max(), len(str(col)))
+            # Limita a proporção (mínimo 5 caracteres de peso, máximo 80) para equilibrar as colunas
+            max_lens.append(min(max(max_len, 5), 80))
+        
+        total_len = sum(max_lens)
+        col_widths = [(l / total_len) * largura_util for l in max_lens]
+    
+    # Prepara os estilos das células para forçar a quebra de linha
+    style_header = styles['Normal']
+    style_header.fontSize = 9
+    style_header.textColor = colors.whitesmoke
+    style_header.alignment = 1 # Center
+    style_header.fontName = 'Helvetica-Bold'
+    
+    style_cell = styles['Normal']
+    style_cell.fontSize = 8
+    style_cell.alignment = 1 # Center
+    style_cell.textColor = colors.HexColor("#2C3E50")
+    
+    # Transforma o cabeçalho em Parágrafos
+    cabecalho = [Paragraph(str(c), style_header) for c in df.columns]
+    dados_formatados = [cabecalho]
+    
+    # Transforma todos os dados em Parágrafos
+    for _, row in df.iterrows():
+        linha_formatada = [Paragraph(str(val), style_cell) for val in row]
+        dados_formatados.append(linha_formatada)
+    
+    # Adiciona repeatRows=1 para o cabeçalho repetir em cada página nova
+    t = Table(dados_formatados, colWidths=col_widths, repeatRows=1)
+    
     estilo = TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#2C3E50")), 
-        ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
         ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0,0), (-1,0), 10),
-        ('BOTTOMPADDING', (0,0), (-1,0), 10),
-        ('BACKGROUND', (0,1), (-1,-1), colors.HexColor("#ECF0F1")), 
-        ('TEXTCOLOR', (0,1), (-1,-1), colors.HexColor("#2C3E50")),
-        ('FONTNAME', (0,1), (-1,-1), 'Helvetica'),
-        ('FONTSIZE', (0,1), (-1,-1), 8),
-        ('GRID', (0,0), (-1,-1), 1, colors.HexColor("#BDC3C7")), 
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('TOPPADDING', (0,0), (-1,-1), 6),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+        ('BACKGROUND', (0,1), (-1,-1), colors.HexColor("#ECF0F1")), 
+        ('GRID', (0,0), (-1,-1), 1, colors.HexColor("#BDC3C7")), 
     ])
     t.setStyle(estilo)
     
