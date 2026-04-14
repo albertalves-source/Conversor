@@ -3,6 +3,7 @@ import pandas as pd
 import io
 import warnings
 import re
+import html
 
 # Tenta importar as bibliotecas específicas para PDF
 try:
@@ -179,13 +180,22 @@ def pdf_para_dataframe(file, modo):
 def dataframe_para_pdf(df, titulo="Relatório Convertido"):
     """Transforma um DataFrame do Pandas num ficheiro PDF formatado com quebra automática de texto."""
     buffer = io.BytesIO()
+    
+    if df.empty:
+        # Previne erro caso tentem converter um Excel vazio
+        doc = SimpleDocTemplate(buffer, pagesize=landscape(A4))
+        styles = getSampleStyleSheet()
+        doc.build([Paragraph("O relatório não contém dados para converter.", styles['Title'])])
+        return buffer.getvalue()
+
     # A4 em paisagem tem aprox 842 pontos de largura. Com margens de 30, sobram cerca de 782 utilizáveis.
     largura_util = 782 
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=18)
     elements = []
     
     styles = getSampleStyleSheet()
-    titulo_formatado = Paragraph(f"<b>{titulo}</b>", styles['Title'])
+    # Escapa caracteres especiais no título também (ex: &)
+    titulo_formatado = Paragraph(f"<b>{html.escape(titulo)}</b>", styles['Title'])
     elements.append(titulo_formatado)
     elements.append(Spacer(1, 20))
     
@@ -193,18 +203,20 @@ def dataframe_para_pdf(df, titulo="Relatório Convertido"):
     col_widths = []
     
     if num_cols > 0:
-        # Lógica para calcular a largura proporcional baseada no tamanho do texto
+        # Lógica de proteção contra colunas totalmente vazias
         max_lens = []
         for col in df.columns:
-            # Analisa o tamanho do nome da coluna e dos dados
-            max_len = max(df[col].astype(str).apply(len).max(), len(str(col)))
-            # Limita a proporção (mínimo 5 caracteres de peso, máximo 80) para equilibrar as colunas
+            col_data = df[col].dropna().astype(str)
+            if not col_data.empty:
+                max_len = max(col_data.apply(len).max(), len(str(col)))
+            else:
+                max_len = len(str(col))
+                
             max_lens.append(min(max(max_len, 5), 80))
         
         total_len = sum(max_lens)
         col_widths = [(l / total_len) * largura_util for l in max_lens]
     
-    # Prepara os estilos das células para forçar a quebra de linha
     style_header = styles['Normal']
     style_header.fontSize = 9
     style_header.textColor = colors.whitesmoke
@@ -216,16 +228,14 @@ def dataframe_para_pdf(df, titulo="Relatório Convertido"):
     style_cell.alignment = 1 # Center
     style_cell.textColor = colors.HexColor("#2C3E50")
     
-    # Transforma o cabeçalho em Parágrafos
-    cabecalho = [Paragraph(str(c), style_header) for c in df.columns]
+    cabecalho = [Paragraph(html.escape(str(c)), style_header) for c in df.columns]
     dados_formatados = [cabecalho]
     
-    # Transforma todos os dados em Parágrafos
     for _, row in df.iterrows():
-        linha_formatada = [Paragraph(str(val), style_cell) for val in row]
+        # html.escape protege o ReportLab de caracteres perigosos como <, > ou &
+        linha_formatada = [Paragraph(html.escape(str(val)) if pd.notna(val) else "", style_cell) for val in row]
         dados_formatados.append(linha_formatada)
     
-    # Adiciona repeatRows=1 para o cabeçalho repetir em cada página nova
     t = Table(dados_formatados, colWidths=col_widths, repeatRows=1)
     
     estilo = TableStyle([
@@ -234,9 +244,13 @@ def dataframe_para_pdf(df, titulo="Relatório Convertido"):
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('TOPPADDING', (0,0), (-1,-1), 6),
         ('BOTTOMPADDING', (0,0), (-1,-1), 6),
-        ('BACKGROUND', (0,1), (-1,-1), colors.HexColor("#ECF0F1")), 
         ('GRID', (0,0), (-1,-1), 1, colors.HexColor("#BDC3C7")), 
     ])
+    
+    # Adiciona a cor de linha alternada apenas se existir mais do que a linha de cabeçalho
+    if len(dados_formatados) > 1:
+        estilo.add('BACKGROUND', (0,1), (-1,-1), colors.HexColor("#ECF0F1"))
+        
     t.setStyle(estilo)
     
     elements.append(t)
