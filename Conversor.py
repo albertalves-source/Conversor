@@ -36,43 +36,115 @@ def pdf_para_dataframe(file, modo):
                             cleaned_row = [str(cell).replace('\n', ' ').strip() if cell else "" for cell in row]
                             all_rows.append(cleaned_row)
                             
-        # MODO 2: Extratos Bancários (Agrupa texto solto na mesma data)
+        # MODO 2: Extratos Bancários (Agrupa texto solto e separa Data, Histórico, ID e Valores)
         elif modo == "Inteligente (Agrupar por Data) - Ideal para Extratos Bancários":
-            linha_atual = []
+            linhas_processadas = []
+            linha_atual = {}
+            
+            def is_id(token):
+                # Heurística para identificar códigos de transação/IDs (Alfanuméricos longos)
+                if len(token) >= 6 and re.search(r'\d', token) and (re.search(r'[a-zA-Z]', token) or '-' in token):
+                    # Ignora se por acaso for uma data mal formatada
+                    if not re.search(r'\d{2}/\d{2}/\d{2,4}', token):
+                        return True
+                # IDs puramente numéricos mas muito grandes (ex: código de barras)
+                if len(token) > 10 and token.isdigit():
+                    return True
+                return False
+
+            # Regex para detetar valores financeiros com ou sem R$ (ex: R$ 43,52 ou -1.250,00)
+            regex_valor = r'(?:R\$\s*)?-?\d{1,3}(?:\.\d{3})*,\d{2}\b'
+
             for page in pdf.pages:
                 text = page.extract_text()
                 if not text: continue
                 
-                for l in text.split('\n'):
-                    if not l.strip(): continue
+                for line in text.split('\n'):
+                    line = line.strip()
+                    if not line: continue
+                    
+                    # Ignorar cabeçalhos repetitivos do PDF que poluem a tabela
+                    if any(header in line.upper() for header in ["SALDO", "EXTRATO", "DATA MOVIMENTO", "PERÍODO", "NOME:", "CONTA:", "ID"]):
+                        continue
                     
                     # Se começar com uma Data, é o início de uma nova transação
-                    if re.search(r'^\s*\d{2}[/-]\d{2}[/-]\d{2,4}', l):
+                    match_data = re.match(r'^(\d{2}[/-]\d{2}[/-]\d{2,4})\s+(.*)', line)
+                    if match_data:
+                        # Guarda a transação anterior na lista
                         if linha_atual:
-                            all_rows.append(linha_atual)
-                        # Separa as colunas por grandes espaços
-                        linha_atual = re.split(r'\s{2,}', l.strip())
+                            linhas_processadas.append(linha_atual)
+                            
+                        data = match_data.group(1)
+                        resto = match_data.group(2)
+                        
+                        # 1. Extrai Valores Monetários
+                        valores = re.findall(regex_valor, resto)
+                        texto_sem_valor = resto
+                        for v in valores:
+                            texto_sem_valor = texto_sem_valor.replace(v, '').strip()
+                            
+                        # 2. Tenta separar o ID longo do Histórico
+                        tokens = texto_sem_valor.split()
+                        id_transacao = ""
+                        historico = texto_sem_valor
+                        
+                        # Verifica os últimos tokens para ver se são o ID da transação
+                        for token in reversed(tokens[-3:]):
+                            if is_id(token):
+                                id_transacao = token + id_transacao
+                                historico = historico.replace(token, '').strip()
+                        
+                        linha_atual = {
+                            "Data": data,
+                            "Histórico": historico.strip(),
+                            "ID / Documento": id_transacao.strip(),
+                            "Valores": " | ".join(valores)
+                        }
                     else:
-                        # Se não tem data, é a continuação do histórico anterior (ou cabeçalho)
+                        # Se não tem data, é linha de continuação da transação anterior
                         if linha_atual:
-                            partes_extra = re.split(r'\s{2,}', l.strip())
-                            if len(partes_extra) == 1:
-                                # Cola na 2ª coluna (Histórico) ou 1ª se só houver uma
-                                if len(linha_atual) > 1:
-                                    linha_atual[1] += " " + partes_extra[0]
-                                else:
-                                    linha_atual[0] += " " + partes_extra[0]
-                            else:
-                                # Tenta colar nas colunas respetivas
-                                for idx, p in enumerate(partes_extra):
-                                    target_idx = min(idx + 1, len(linha_atual) - 1)
-                                    linha_atual[target_idx] += " " + p
-                        else:
-                            # Cabeçalhos iniciais antes das transações
-                            all_rows.append(re.split(r'\s{2,}', l.strip()))
+                            # Tenta puxar valores perdidos nesta linha
+                            valores_extra = re.findall(regex_valor, line)
+                            if valores_extra:
+                                ext_vals = " | ".join(valores_extra)
+                                linha_atual["Valores"] = (linha_atual["Valores"] + " | " + ext_vals).strip(" | ")
+                                
+                            texto_extra = line
+                            for v in valores_extra:
+                                texto_extra = texto_extra.replace(v, '').strip()
+                                
+                            # Tenta puxar restos de IDs que foram quebrados
+                            tokens_extra = texto_extra.split()
+                            id_extra = ""
+                            hist_extra = texto_extra
+                            
+                            for token in reversed(tokens_extra[-3:]):
+                                if is_id(token):
+                                    id_extra = token + id_extra
+                                    hist_extra = hist_extra.replace(token, '').strip()
+                                    
+                            # Cola o que sobrou no sítio certo
+                            if hist_extra:
+                                linha_atual["Histórico"] += " " + hist_extra.strip()
+                            if id_extra:
+                                linha_atual["ID / Documento"] += id_extra.strip()
             
-            if linha_atual: # Guarda a última linha
-                all_rows.append(linha_atual)
+            if linha_atual: # Guarda a última linha do documento
+                linhas_processadas.append(linha_atual)
+                
+            df = pd.DataFrame(linhas_processadas)
+            
+            # Separa a string de valores em colunas distintas (Valor 1, Valor 2...)
+            if not df.empty and "Valores" in df.columns:
+                def extrair_colunas_valor(val_str):
+                    vals = [v.strip() for v in str(val_str).split('|') if v.strip()]
+                    while len(vals) < 3: vals.append("")
+                    return pd.Series([vals[0], vals[1], vals[2]])
+                
+                df[['Valor 1', 'Valor 2', 'Valor 3']] = df['Valores'].apply(extrair_colunas_valor)
+                df = df.drop(columns=['Valores'])
+                
+            return df
 
         # MODO 3: Texto Quebrado Simples
         elif modo == "Texto Bruto (Separar colunas por espaço)":
