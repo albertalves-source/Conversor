@@ -13,8 +13,12 @@ try:
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
     from reportlab.lib import colors
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    # Bibliotecas para OCR
+    import pytesseract
+    from pdf2image import convert_from_bytes
+    from PIL import Image
 except ImportError:
-    st.error("⚠️ Faltam bibliotecas! Certifique-se de ter no seu requirements.txt: pandas, streamlit, pdfplumber, reportlab, openpyxl, xlsxwriter")
+    st.error("⚠️ Faltam bibliotecas! Certifique-se de ter no seu requirements.txt: pandas, streamlit, pdfplumber, reportlab, openpyxl, xlsxwriter, pytesseract, pdf2image, Pillow")
     st.stop()
 
 # Configurações de Página
@@ -44,8 +48,38 @@ def parse_pages(page_str, max_pages):
 
 # --- FUNÇÕES DE CONVERSÃO ---
 
-def pdf_para_dataframe(file, modo, paginas_str=""):
+def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
     """Lê um PDF e transforma num DataFrame do Pandas."""
+    
+    # --- MODO 4: OCR (Reconhecimento Ótico de Caracteres) ---
+    if modo == "Imagem/Scan (OCR)":
+        try:
+            file.seek(0)
+            images = convert_from_bytes(file.read())
+            max_pages = len(images)
+            indices_paginas = parse_pages(paginas_str, max_pages)
+            
+            all_rows = []
+            for idx in indices_paginas:
+                if idx < len(images):
+                    # Tenta extrair texto da imagem (assumindo português)
+                    text = pytesseract.image_to_string(images[idx], lang='por')
+                    for l in text.split('\n'):
+                        if l.strip():
+                            all_rows.append(re.split(r'\s{2,}', l.strip()))
+            
+            if not all_rows:
+                return pd.DataFrame()
+                
+            max_cols = max((len(row) for row in all_rows if row), default=0)
+            normalized_rows = [row + [""] * (max_cols - len(row)) for row in all_rows if row]
+            return pd.DataFrame(normalized_rows)
+            
+        except Exception as e:
+            st.error(f"Erro no OCR. Verifique se o Tesseract e o Poppler estão instalados no sistema operacional. Detalhes: {e}")
+            return pd.DataFrame()
+
+    # --- MODOS BASEADOS EM TEXTO NATIVO (PDFPLUMBER) ---
     with pdfplumber.open(file) as pdf:
         max_pages = len(pdf.pages)
         indices_paginas = parse_pages(paginas_str, max_pages)
@@ -63,7 +97,6 @@ def pdf_para_dataframe(file, modo, paginas_str=""):
                 if tables:
                     for table in tables:
                         for row in table:
-                            # Limpa espaços em branco e caracteres invisíveis
                             cleaned_row = [str(cell).replace('\n', ' ').replace('\xa0', ' ').strip() if cell else "" for cell in row]
                             all_rows.append(cleaned_row)
                             
@@ -80,7 +113,6 @@ def pdf_para_dataframe(file, modo, paginas_str=""):
                     return True
                 return False
 
-            # Regex aprimorado para valores (aceita 1.000,00 ou 1000,00)
             regex_valor = r'(?:R\$\s*)?-?\d{1,3}(?:\.\d{3})*,\d{2}\b'
 
             for idx in indices_paginas:
@@ -161,8 +193,46 @@ def pdf_para_dataframe(file, modo, paginas_str=""):
                 del row["Valores_Lista"]
 
             return pd.DataFrame(linhas_processadas)
+            
+        # MODO 3: Regras Personalizadas (Agrupar por Palavra-Chave)
+        elif modo == "Personalizado (Palavras-Chave)":
+            palavra_chave = kwargs.get('palavra_chave', '').strip().upper()
+            if not palavra_chave:
+                st.warning("⚠️ Precisa de definir uma palavra-chave no campo de texto para este modo funcionar.")
+                return pd.DataFrame()
+                
+            linhas_processadas = []
+            linha_atual = {}
+            
+            for idx in indices_paginas:
+                page = pdf.pages[idx]
+                text = page.extract_text()
+                if not text: continue
+                
+                for line in text.split('\n'):
+                    line = line.strip()
+                    if not line: continue
+                    
+                    # Se encontrou a palavra-chave, inicia um novo registo
+                    if palavra_chave in line.upper():
+                        if linha_atual:
+                            linhas_processadas.append(linha_atual)
+                        # Separa o conteúdo associado à palavra-chave (se houver)
+                        partes = re.split(re.escape(palavra_chave), line, flags=re.IGNORECASE)
+                        valor_chave = partes[1].strip() if len(partes) > 1 else ""
+                        linha_atual = {"Identificador": linha_atual.get("Identificador", f"Registo {len(linhas_processadas)+1}"),
+                                       "Palavra-Chave": valor_chave, 
+                                       "Detalhes": ""}
+                    elif linha_atual:
+                        # Tudo o que vem a seguir até à próxima palavra-chave é detalhe
+                        linha_atual["Detalhes"] += f" {line}"
+            
+            if linha_atual:
+                linhas_processadas.append(linha_atual)
+                
+            return pd.DataFrame(linhas_processadas)
 
-        # MODO 3: Texto Quebrado
+        # MODO 5: Texto Quebrado
         elif modo == "Texto Bruto (Separar colunas por espaço)":
             for idx in indices_paginas:
                 page = pdf.pages[idx]
@@ -172,18 +242,18 @@ def pdf_para_dataframe(file, modo, paginas_str=""):
                     if l.strip():
                         all_rows.append(re.split(r'\s{2,}', l.strip()))
         
-        if not all_rows:
+        if not all_rows and modo != "Personalizado (Palavras-Chave)":
             return pd.DataFrame()
             
-        max_cols = max((len(row) for row in all_rows if row), default=0)
-        normalized_rows = [row + [""] * (max_cols - len(row)) for row in all_rows if row]
-        
-        if modo == "Tabelas com Bordas (Padrão)" and len(normalized_rows) > 1:
-            df = pd.DataFrame(normalized_rows[1:], columns=normalized_rows[0])
-        else:
-            df = pd.DataFrame(normalized_rows)
+        if all_rows:
+            max_cols = max((len(row) for row in all_rows if row), default=0)
+            normalized_rows = [row + [""] * (max_cols - len(row)) for row in all_rows if row]
             
-        return df
+            if modo == "Tabelas com Bordas (Padrão)" and len(normalized_rows) > 1:
+                df = pd.DataFrame(normalized_rows[1:], columns=normalized_rows[0])
+            else:
+                df = pd.DataFrame(normalized_rows)
+            return df
 
 def dataframe_para_pdf(df, titulo="Relatório Convertido"):
     """Transforma um DataFrame do Pandas num ficheiro PDF formatado."""
@@ -272,15 +342,24 @@ with aba1:
             [
                 "Tabelas com Bordas (Padrão)",
                 "Inteligente (Agrupar por Data) - Ideal para Extratos Bancários",
+                "Personalizado (Palavras-Chave)",
+                "Imagem/Scan (OCR)",
                 "Texto Bruto (Separar colunas por espaço)"
             ]
         )
     with col2:
         paginas_input = st.text_input("Páginas (ex: 1, 3, 5-7)", placeholder="Deixe vazio para todas")
 
+    # Opções dinâmicas mediante o modo selecionado
+    kwargs_extracao = {}
+    if modo_extracao == "Personalizado (Palavras-Chave)":
+        palavra = st.text_input("Palavra-chave para iniciar nova linha (Ex: 'Matrícula:', 'Nome:', 'Fatura:'):")
+        kwargs_extracao['palavra_chave'] = palavra
+        st.caption("Esta regra vai procurar a palavra-chave indicada e agrupar tudo o que vem a seguir até à próxima ocorrência numa única linha estruturada.")
+    elif modo_extracao == "Imagem/Scan (OCR)":
+        st.info("ℹ️ **Aviso:** O modo OCR requer ferramentas adicionais instaladas na máquina servidora (Tesseract-OCR e Poppler).")
+
     limpar_dados = st.checkbox("Limpar colunas e linhas vazias automaticamente", value=True)
-    
-    st.info("💡 **Dica:** Os Extratos Bancários devem ser extraídos pelo modo Inteligente. Se a tabela final ficar estranha, troque de modo e processe novamente.")
     
     pdf_file = st.file_uploader("Arraste o seu PDF aqui", type=["pdf"])
     
@@ -288,9 +367,9 @@ with aba1:
         if st.button("🚀 Processar PDF", type="primary", use_container_width=True):
             with st.spinner("A analisar a estrutura do PDF..."):
                 try:
-                    df_pdf = pdf_para_dataframe(pdf_file, modo_extracao, paginas_input)
+                    df_pdf = pdf_para_dataframe(pdf_file, modo_extracao, paginas_input, **kwargs_extracao)
                     
-                    if limpar_dados and not df_pdf.empty:
+                    if df_pdf is not None and not df_pdf.empty and limpar_dados:
                         # Substitui strings vazias por NaN e remove linhas/colunas 100% vazias
                         df_pdf.replace(r'^\s*$', pd.NA, regex=True, inplace=True)
                         df_pdf.dropna(how='all', inplace=True)
@@ -307,7 +386,7 @@ with aba1:
             df_mostrar = st.session_state.df_extraido
             
             if df_mostrar.empty:
-                st.warning("Não foi possível encontrar dados com as definições atuais. Tente outro Método de Extração.")
+                st.warning("Não foi possível encontrar dados com as definições atuais. Tente alterar o Método de Extração.")
             else:
                 st.success(f"PDF extraído com sucesso! Encontradas {len(df_mostrar)} linhas.")
                 st.dataframe(df_mostrar, use_container_width=True)
