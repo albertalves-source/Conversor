@@ -4,3 +4,6 @@ pdfplumber
 xlsxwriter
 openpyxl
 reportlab
+pytesseract
+pdf2image
+Pillow
