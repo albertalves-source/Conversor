@@ -46,6 +46,27 @@ def parse_pages(page_str, max_pages):
     # Filtra páginas inválidas
     return sorted([p for p in pages if 0 <= p < max_pages])
 
+def deduplicate_columns(df):
+    """Garante que todas as colunas tenham nomes únicos para não causar erro no Streamlit/PyArrow."""
+    col_names = []
+    seen = set()
+    for i, col in enumerate(df.columns):
+        col_str = str(col).strip()
+        if not col_str:
+            col_str = f"Coluna_Vazia_{i+1}"
+        
+        original = col_str
+        count = 1
+        while col_str in seen:
+            col_str = f"{original}_{count}"
+            count += 1
+        
+        seen.add(col_str)
+        col_names.append(col_str)
+    
+    df.columns = col_names
+    return df
+
 # --- FUNÇÕES DE CONVERSÃO ---
 
 def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
@@ -82,7 +103,8 @@ def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
                 
             max_cols = max((len(row) for row in all_rows if row), default=0)
             normalized_rows = [row + [""] * (max_cols - len(row)) for row in all_rows if row]
-            return pd.DataFrame(normalized_rows)
+            df = pd.DataFrame(normalized_rows)
+            return deduplicate_columns(df)
             
         except Exception as e:
             erro_str = str(e).lower()
@@ -144,7 +166,7 @@ def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
             for idx in indices_paginas:
                 page = pdf.pages[idx]
                 
-                # NOVO: Tenta usar layout=True para evitar que o PDF seja lido coluna a coluna
+                # Tenta usar layout=True para evitar que o PDF seja lido coluna a coluna
                 try:
                     text = page.extract_text(layout=True)
                 except TypeError:
@@ -211,7 +233,7 @@ def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
                 hist_up = row["Histórico"].upper()
                 is_cred = False
                 
-                # Inclui agora "DEVOLUÇÃO" / "DESFAZIMENTO" para capturar os créditos do Delfinance
+                # Inclui "DEVOLUÇÃO" / "DESFAZIMENTO" para capturar os créditos
                 if any(x in hist_up for x in ["RECEBID", "DEVOLU", "DESFAZIMENTO", "ESTORNO", "RESSARCIMENTO", "CREDIT", "CRÉDIT", "DEPÓSIT", "DEPOSIT", "PIX RECEBIDO"]):
                     is_cred = True
                 elif any(x in hist_up for x in ["ENVIAD", "PAGAMENTO", "PAGTO", "SAQUE", "COMPRA", "DEBITO", "DÉBITO", "TARIFA", "TAXA"]):
@@ -276,6 +298,7 @@ def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
                     if l.strip():
                         all_rows.append(re.split(r'\s{2,}', l.strip()))
         
+        # Para todos os modos de grelha genérica que chegam aqui
         if not all_rows and modo != "Personalizado (Palavras-Chave)":
             return pd.DataFrame()
             
@@ -283,12 +306,13 @@ def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
             max_cols = max((len(row) for row in all_rows if row), default=0)
             normalized_rows = [row + [""] * (max_cols - len(row)) for row in all_rows if row]
             
-            # Se a primeira linha tiver menos de metade das colunas preenchidas do que as linhas normais,
-            # pode ser apenas um título solto, então tentamos ser mais inteligentes
             if len(normalized_rows) > 1:
                 df = pd.DataFrame(normalized_rows[1:], columns=normalized_rows[0])
             else:
                 df = pd.DataFrame(normalized_rows)
+                
+            # Limpa e desduplica o nome das colunas geradas
+            df = deduplicate_columns(df)
             return df
 
 def dataframe_para_pdf(df, titulo="Relatório Convertido"):
@@ -412,6 +436,9 @@ with aba1:
                         df_pdf.dropna(how='all', inplace=True)
                         df_pdf.dropna(axis=1, how='all', inplace=True)
                         df_pdf.fillna("", inplace=True)
+                        
+                        # Re-aplica a desduplicação de colunas por precaução, após a limpeza
+                        df_pdf = deduplicate_columns(df_pdf)
                         
                     st.session_state.df_extraido = df_pdf
                 except Exception as e:
