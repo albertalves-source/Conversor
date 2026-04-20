@@ -76,7 +76,7 @@ def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
             return pd.DataFrame(normalized_rows)
             
         except Exception as e:
-            st.error(f"Erro no OCR. Verifique se o Tesseract e o Poppler estão instalados no sistema operacional. Detalhes: {e}")
+            st.error(f"Erro no OCR. Este modo requer programas externos instalados no sistema (Poppler e Tesseract). Detalhes: {e}")
             return pd.DataFrame()
 
     # --- MODOS BASEADOS EM TEXTO NATIVO (PDFPLUMBER) ---
@@ -89,7 +89,7 @@ def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
 
         all_rows = []
         
-        # MODO 1: Tabelas com linhas desenhadas
+        # MODO 1: Tabelas com Bordas
         if modo == "Tabelas com Bordas (Padrão)":
             for idx in indices_paginas:
                 page = pdf.pages[idx]
@@ -127,7 +127,9 @@ def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
                     if any(header in line.upper() for header in ["SALDO ANTERIOR", "SALDO FINAL", "EXTRATO", "DATA MOVIMENTO", "PERÍODO", "NOME:", "CONTA:", "DÉBITO", "CRÉDITO"]):
                         continue
                     
-                    match_data = re.match(r'^(\d{2}[/-]\d{2}[/-]\d{2,4})\s+(.*)', line)
+                    # CORREÇÃO APLICADA AQUI: Adicionado \s* para ignorar espaços em branco antes da data
+                    match_data = re.search(r'^\s*(\d{2}[/-]\d{2}[/-]\d{2,4})\s+(.*)', line)
+                    
                     if match_data:
                         if linha_atual:
                             linhas_processadas.append(linha_atual)
