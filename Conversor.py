@@ -15,10 +15,10 @@ try:
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     # Bibliotecas para OCR
     import pytesseract
-    from pdf2image import convert_from_bytes
+    import fitz  # PyMuPDF (Substituiu o pdf2image para não precisar do Poppler)
     from PIL import Image
 except ImportError:
-    st.error("⚠️ Faltam bibliotecas! Certifique-se de ter no seu requirements.txt: pandas, streamlit, pdfplumber, reportlab, openpyxl, xlsxwriter, pytesseract, pdf2image, Pillow")
+    st.error("⚠️ Faltam bibliotecas! Certifique-se de ter no seu requirements.txt: pandas, streamlit, pdfplumber, reportlab, openpyxl, xlsxwriter, pytesseract, PyMuPDF, Pillow")
     st.stop()
 
 # Configurações de Página
@@ -55,15 +55,24 @@ def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
     if modo == "Imagem/Scan (OCR)":
         try:
             file.seek(0)
-            images = convert_from_bytes(file.read())
-            max_pages = len(images)
+            # Usa PyMuPDF (fitz) para abrir o PDF sem precisar do Poppler
+            doc = fitz.open(stream=file.read(), filetype="pdf")
+            max_pages = len(doc)
             indices_paginas = parse_pages(paginas_str, max_pages)
             
             all_rows = []
             for idx in indices_paginas:
-                if idx < len(images):
+                if idx < max_pages:
+                    # Carrega a página e converte para imagem (pixmap) com 200 DPI para boa qualidade
+                    page = doc.load_page(idx)
+                    pix = page.get_pixmap(dpi=200)
+                    
+                    # Converte o Pixmap para Imagem PIL
+                    mode = "RGBA" if pix.alpha else "RGB"
+                    img = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
+                    
                     # Tenta extrair texto da imagem (assumindo português)
-                    text = pytesseract.image_to_string(images[idx], lang='por')
+                    text = pytesseract.image_to_string(img, lang='por')
                     for l in text.split('\n'):
                         if l.strip():
                             all_rows.append(re.split(r'\s{2,}', l.strip()))
@@ -76,7 +85,11 @@ def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
             return pd.DataFrame(normalized_rows)
             
         except Exception as e:
-            st.error(f"Erro no OCR. Este modo requer programas externos instalados no sistema (Poppler e Tesseract). Detalhes: {e}")
+            erro_str = str(e).lower()
+            if "tesseract" in erro_str:
+                st.error("⚠️ O Tesseract-OCR não foi encontrado! Ele é um software que precisa ser instalado no Windows (ou Linux) e adicionado ao PATH para ler as letras da imagem.")
+            else:
+                st.error(f"Erro no OCR. Detalhes: {e}")
             return pd.DataFrame()
 
     # --- MODOS BASEADOS EM TEXTO NATIVO (PDFPLUMBER) ---
@@ -127,7 +140,6 @@ def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
                     if any(header in line.upper() for header in ["SALDO ANTERIOR", "SALDO FINAL", "EXTRATO", "DATA MOVIMENTO", "PERÍODO", "NOME:", "CONTA:", "DÉBITO", "CRÉDITO"]):
                         continue
                     
-                    # CORREÇÃO APLICADA AQUI: Adicionado \s* para ignorar espaços em branco antes da data
                     match_data = re.search(r'^\s*(\d{2}[/-]\d{2}[/-]\d{2,4})\s+(.*)', line)
                     
                     if match_data:
@@ -359,7 +371,7 @@ with aba1:
         kwargs_extracao['palavra_chave'] = palavra
         st.caption("Esta regra vai procurar a palavra-chave indicada e agrupar tudo o que vem a seguir até à próxima ocorrência numa única linha estruturada.")
     elif modo_extracao == "Imagem/Scan (OCR)":
-        st.info("ℹ️ **Aviso:** O modo OCR requer ferramentas adicionais instaladas na máquina servidora (Tesseract-OCR e Poppler).")
+        st.info("ℹ️ **Aviso:** O modo OCR requer o software Tesseract-OCR instalado no sistema operacional da máquina para ler as imagens.")
 
     limpar_dados = st.checkbox("Limpar colunas e linhas vazias automaticamente", value=True)
     
