@@ -5,5 +5,5 @@ xlsxwriter
 openpyxl
 reportlab
 pytesseract
-pdf2image
+PyMuPDF
 Pillow
