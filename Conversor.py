@@ -120,7 +120,8 @@ def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
             
             def is_id(token):
                 if len(token) >= 6 and re.search(r'\d', token) and (re.search(r'[a-zA-Z]', token) or '-' in token):
-                    if not re.search(r'\d{2}/\d{2}/\d{2,4}', token):
+                    # Atualizado para aceitar datas sem o ano (DD/MM) e ignorar como ID
+                    if not re.search(r'\d{2}[/-]\d{2}(?:[/-]\d{2,4})?', token):
                         return True
                 if len(token) > 10 and token.isdigit():
                     return True
@@ -140,7 +141,8 @@ def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
                     if any(header in line.upper() for header in ["SALDO ANTERIOR", "SALDO FINAL", "EXTRATO", "DATA MOVIMENTO", "PERÍODO", "NOME:", "CONTA:", "DÉBITO", "CRÉDITO"]):
                         continue
                     
-                    match_data = re.search(r'^\s*(\d{2}[/-]\d{2}[/-]\d{2,4})\s+(.*)', line)
+                    # Atualizado para aceitar datas com ou sem o ano (ex: 15/08 ou 15/08/2023)
+                    match_data = re.search(r'^\s*(\d{2}[/-]\d{2}(?:[/-]\d{2,4})?)\s+(.*)', line)
                     
                     if match_data:
                         if linha_atual:
