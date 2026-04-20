@@ -87,7 +87,7 @@ def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
         except Exception as e:
             erro_str = str(e).lower()
             if "tesseract" in erro_str:
-                st.error("⚠️ O Tesseract-OCR não foi encontrado! Ele é um software que precisa ser instalado no Windows (ou Linux) e adicionado ao PATH para ler as letras da imagem.")
+                st.error("⚠️ O Tesseract-OCR não foi encontrado! Ele é um software que precisa ser instalado **apenas no Servidor** (ou PC principal) onde a aplicação está alojada.")
             else:
                 st.error(f"Erro no OCR. Detalhes: {e}")
             return pd.DataFrame()
@@ -371,7 +371,7 @@ with aba1:
         kwargs_extracao['palavra_chave'] = palavra
         st.caption("Esta regra vai procurar a palavra-chave indicada e agrupar tudo o que vem a seguir até à próxima ocorrência numa única linha estruturada.")
     elif modo_extracao == "Imagem/Scan (OCR)":
-        st.info("ℹ️ **Aviso:** O modo OCR requer o software Tesseract-OCR instalado no sistema operacional da máquina para ler as imagens.")
+        st.info("ℹ️ **Como funciona o OCR na rede do escritório:** Só precisa de instalar o Tesseract-OCR na máquina central (Servidor) que corre esta aplicação. Os outros funcionários acedem apenas pelo navegador (Chrome/Edge) e não precisam de instalar nada nas suas próprias máquinas!")
 
     limpar_dados = st.checkbox("Limpar colunas e linhas vazias automaticamente", value=True)
     
@@ -400,7 +400,7 @@ with aba1:
             df_mostrar = st.session_state.df_extraido
             
             if df_mostrar.empty:
-                st.warning("Não foi possível encontrar dados com as definições atuais. Tente alterar o Método de Extração.")
+                st.warning("Não foi possível encontrar dados com as definições atuais. Dica: Se o 'Modo Inteligente' falhou com o seu extrato, tente usar o 'Texto Bruto' para ver como o PDF está formatado originalmente.")
             else:
                 st.success(f"PDF extraído com sucesso! Encontradas {len(df_mostrar)} linhas.")
                 st.dataframe(df_mostrar, use_container_width=True)
