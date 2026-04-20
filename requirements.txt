@@ -1,9 +1,9 @@
 streamlit
 pandas
 pdfplumber
-xlsxwriter
-openpyxl
 reportlab
+openpyxl
+xlsxwriter
 pytesseract
 PyMuPDF
 Pillow
