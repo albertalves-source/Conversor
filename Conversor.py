@@ -113,6 +113,19 @@ def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
                             cleaned_row = [str(cell).replace('\n', ' ').replace('\xa0', ' ').strip() if cell else "" for cell in row]
                             all_rows.append(cleaned_row)
                             
+        # MODO 1.5: Tabelas sem Bordas (NOVO - Ideal para o caso do utilizador)
+        elif modo == "Tabelas sem Bordas (Alinhamento Oculto) - Ideal para Relatórios PDF":
+            for idx in indices_paginas:
+                page = pdf.pages[idx]
+                # A estratégia 'text' força o pdfplumber a calcular colunas com base no alinhamento visual
+                tables = page.extract_tables({"vertical_strategy": "text", "horizontal_strategy": "text"})
+                if tables:
+                    for table in tables:
+                        for row in table:
+                            cleaned_row = [str(cell).replace('\n', ' ').replace('\xa0', ' ').strip() if cell else "" for cell in row]
+                            if any(cleaned_row):
+                                all_rows.append(cleaned_row)
+                            
         # MODO 2: Extratos Bancários (Inteligência Contábil)
         elif modo == "Inteligente (Agrupar por Data) - Ideal para Extratos Bancários":
             linhas_processadas = []
@@ -120,7 +133,6 @@ def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
             
             def is_id(token):
                 if len(token) >= 6 and re.search(r'\d', token) and (re.search(r'[a-zA-Z]', token) or '-' in token):
-                    # Atualizado para aceitar datas sem o ano (DD/MM) e ignorar como ID
                     if not re.search(r'\d{2}[/-]\d{2}(?:[/-]\d{2,4})?', token):
                         return True
                 if len(token) > 10 and token.isdigit():
@@ -131,8 +143,17 @@ def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
 
             for idx in indices_paginas:
                 page = pdf.pages[idx]
-                text = page.extract_text()
+                
+                # NOVO: Tenta usar layout=True para evitar que o PDF seja lido coluna a coluna
+                try:
+                    text = page.extract_text(layout=True)
+                except TypeError:
+                    text = page.extract_text()
+                    
                 if not text: continue
+                
+                # Conserta datas onde o ano foi partido ao meio com uma quebra de linha (ex: 01/02/2 \n 026)
+                text = re.sub(r'(\d{2}[/-]\d{2}[/-]\d{1,3})[\s\n]+(\d{1,3})\b', r'\1\2 ', text)
                 
                 for line in text.split('\n'):
                     line = line.strip()
@@ -141,7 +162,6 @@ def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
                     if any(header in line.upper() for header in ["SALDO ANTERIOR", "SALDO FINAL", "EXTRATO", "DATA MOVIMENTO", "PERÍODO", "NOME:", "CONTA:", "DÉBITO", "CRÉDITO"]):
                         continue
                     
-                    # Atualizado para aceitar datas com ou sem o ano (ex: 15/08 ou 15/08/2023)
                     match_data = re.search(r'^\s*(\d{2}[/-]\d{2}(?:[/-]\d{2,4})?)\s+(.*)', line)
                     
                     if match_data:
@@ -191,7 +211,8 @@ def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
                 hist_up = row["Histórico"].upper()
                 is_cred = False
                 
-                if any(x in hist_up for x in ["RECEBID", "DEVOLU", "ESTORNO", "RESSARCIMENTO", "CREDIT", "CRÉDIT", "DEPÓSIT", "DEPOSIT", "PIX RECEBIDO"]):
+                # Inclui agora "DEVOLUÇÃO" / "DESFAZIMENTO" para capturar os créditos do Delfinance
+                if any(x in hist_up for x in ["RECEBID", "DEVOLU", "DESFAZIMENTO", "ESTORNO", "RESSARCIMENTO", "CREDIT", "CRÉDIT", "DEPÓSIT", "DEPOSIT", "PIX RECEBIDO"]):
                     is_cred = True
                 elif any(x in hist_up for x in ["ENVIAD", "PAGAMENTO", "PAGTO", "SAQUE", "COMPRA", "DEBITO", "DÉBITO", "TARIFA", "TAXA"]):
                     is_cred = False
@@ -229,18 +250,15 @@ def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
                     line = line.strip()
                     if not line: continue
                     
-                    # Se encontrou a palavra-chave, inicia um novo registo
                     if palavra_chave in line.upper():
                         if linha_atual:
                             linhas_processadas.append(linha_atual)
-                        # Separa o conteúdo associado à palavra-chave (se houver)
                         partes = re.split(re.escape(palavra_chave), line, flags=re.IGNORECASE)
                         valor_chave = partes[1].strip() if len(partes) > 1 else ""
                         linha_atual = {"Identificador": linha_atual.get("Identificador", f"Registo {len(linhas_processadas)+1}"),
                                        "Palavra-Chave": valor_chave, 
                                        "Detalhes": ""}
                     elif linha_atual:
-                        # Tudo o que vem a seguir até à próxima palavra-chave é detalhe
                         linha_atual["Detalhes"] += f" {line}"
             
             if linha_atual:
@@ -265,7 +283,9 @@ def pdf_para_dataframe(file, modo, paginas_str="", **kwargs):
             max_cols = max((len(row) for row in all_rows if row), default=0)
             normalized_rows = [row + [""] * (max_cols - len(row)) for row in all_rows if row]
             
-            if modo == "Tabelas com Bordas (Padrão)" and len(normalized_rows) > 1:
+            # Se a primeira linha tiver menos de metade das colunas preenchidas do que as linhas normais,
+            # pode ser apenas um título solto, então tentamos ser mais inteligentes
+            if len(normalized_rows) > 1:
                 df = pd.DataFrame(normalized_rows[1:], columns=normalized_rows[0])
             else:
                 df = pd.DataFrame(normalized_rows)
@@ -356,6 +376,7 @@ with aba1:
         modo_extracao = st.selectbox(
             "Método de Extração:",
             [
+                "Tabelas sem Bordas (Alinhamento Oculto) - Ideal para Relatórios PDF",
                 "Tabelas com Bordas (Padrão)",
                 "Inteligente (Agrupar por Data) - Ideal para Extratos Bancários",
                 "Personalizado (Palavras-Chave)",
@@ -402,7 +423,7 @@ with aba1:
             df_mostrar = st.session_state.df_extraido
             
             if df_mostrar.empty:
-                st.warning("Não foi possível encontrar dados com as definições atuais. Dica: Se o 'Modo Inteligente' falhou com o seu extrato, tente usar o 'Texto Bruto' para ver como o PDF está formatado originalmente.")
+                st.warning("Não foi possível encontrar dados com as definições atuais. Dica: Tente usar o novo modo 'Tabelas sem Bordas' para este tipo de relatório.")
             else:
                 st.success(f"PDF extraído com sucesso! Encontradas {len(df_mostrar)} linhas.")
                 st.dataframe(df_mostrar, use_container_width=True)
